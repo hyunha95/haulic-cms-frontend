@@ -122,10 +122,12 @@ export interface Product extends BaseEntity {
   price: number
   originalPrice?: number
   image: string
+  additionalImages?: string[]
+  detailDescriptionImage?: string
   rating: number
   reviewCount: number
   badge?: string
-  sku: string
+  stock: number
   isActive: boolean
 }
 

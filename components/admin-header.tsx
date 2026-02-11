@@ -24,6 +24,8 @@ const pageTitles: Record<string, string> = {
   "/home-manage/ranking": "카테고리 랭킹",
   "/home-manage/app-cta": "앱 다운로드 CTA",
   "/products": "상품 관리",
+  "/products/new": "상품 등록",
+  "/products/categories": "카테고리 관리",
   "/exhibitions": "기획전/카테고리 관리",
   "/reviews": "리뷰 관리",
   "/navigation": "네비게이션 관리",

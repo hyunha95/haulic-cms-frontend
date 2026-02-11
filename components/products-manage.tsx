@@ -1,12 +1,12 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import Link from "next/link"
+import { useState, useMemo, useEffect } from "react"
 import {
   Plus,
   Pencil,
   Trash2,
   Search,
-  Filter,
   MoreHorizontal,
   Eye,
   Copy,
@@ -17,13 +17,13 @@ import {
   X,
   ImageIcon,
 } from "lucide-react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { ProductFormFields } from "@/components/product-form-fields"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Textarea } from "@/components/ui/textarea"
 import {
   Table,
   TableBody,
@@ -54,8 +54,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { KcCertificationSection } from "@/components/kc-certification-section"
 import { mockProducts } from "@/lib/mock-data"
+import {
+  DEFAULT_PRODUCT_CATEGORY_TREE,
+  flattenCategoryTree,
+  readProductCategoryTreeFromStorage,
+} from "@/lib/product-categories-storage"
+import { readProductsFromStorage, writeProductsToStorage } from "@/lib/products-storage"
 import type { Product } from "@/lib/types"
 
 function StatusBadge({ status }: { status: string }) {
@@ -82,7 +88,6 @@ function formatPrice(value: number) {
 }
 
 const ITEMS_PER_PAGE = 10
-const categories = ["전체", "차량용품", "생활용품", "주방용품", "전자기기", "뷰티"]
 
 export function ProductsManage() {
   const [products, setProducts] = useState<Product[]>(mockProducts)
@@ -93,11 +98,56 @@ export function ProductsManage() {
   const [page, setPage] = useState(1)
   const [editProduct, setEditProduct] = useState<Product | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
+  const [isStorageInitialized, setIsStorageInitialized] = useState(false)
+  const [categoryTree, setCategoryTree] = useState(DEFAULT_PRODUCT_CATEGORY_TREE)
+
+  useEffect(() => {
+    const storedProducts = readProductsFromStorage()
+    if (storedProducts) {
+      setProducts(storedProducts)
+    }
+
+    const storedCategoryTree = readProductCategoryTreeFromStorage()
+    if (storedCategoryTree && storedCategoryTree.length > 0) {
+      setCategoryTree(storedCategoryTree)
+    }
+
+    setIsStorageInitialized(true)
+  }, [])
+
+  useEffect(() => {
+    if (!isStorageInitialized) return
+    writeProductsToStorage(products)
+  }, [products, isStorageInitialized])
+
+  const filterCategories = useMemo(() => {
+    const values: string[] = []
+
+    const pushUnique = (value: string) => {
+      const normalized = value.trim()
+      if (!normalized) return
+      if (values.includes(normalized)) return
+      values.push(normalized)
+    }
+
+    for (const item of flattenCategoryTree(categoryTree)) {
+      pushUnique(item.value)
+    }
+
+    for (const product of products) {
+      pushUnique(product.category)
+    }
+
+    return ["전체", ...values]
+  }, [categoryTree, products])
 
   const filtered = useMemo(() => {
     return products.filter((p) => {
-      const matchSearch = p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase())
-      const matchCategory = categoryFilter === "전체" || p.category === categoryFilter
+      const matchSearch = p.name.toLowerCase().includes(search.toLowerCase())
+      const matchCategory =
+        categoryFilter === "전체" ||
+        p.category === categoryFilter ||
+        p.category.startsWith(`${categoryFilter} > `)
       const matchStatus = statusFilter === "전체" || p.status === statusFilter
       return matchSearch && matchCategory && matchStatus
     })
@@ -118,27 +168,6 @@ export function ProductsManage() {
 
   const toggleOne = (id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
-  }
-
-  const handleCreate = () => {
-    const newProduct: Product = {
-      id: `p-${Date.now()}`,
-      name: "",
-      category: "",
-      price: 0,
-      image: "",
-      rating: 0,
-      reviewCount: 0,
-      sku: "",
-      isActive: false,
-      status: "draft",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      createdBy: "admin",
-      updatedBy: "admin",
-    }
-    setEditProduct(newProduct)
-    setIsDialogOpen(true)
   }
 
   const handleEdit = (product: Product) => {
@@ -186,9 +215,11 @@ export function ProductsManage() {
             <Upload className="h-4 w-4 mr-1" />
             가져오기
           </Button>
-          <Button size="sm" onClick={handleCreate}>
-            <Plus className="h-4 w-4 mr-1" />
-            상품 등록
+          <Button size="sm" asChild>
+            <Link href="/products/new">
+              <Plus className="h-4 w-4 mr-1" />
+              상품 등록
+            </Link>
           </Button>
         </div>
       </div>
@@ -202,7 +233,7 @@ export function ProductsManage() {
               <div className="relative">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="상품명 또는 SKU로 검색..."
+                  placeholder="상품명으로 검색..."
                   className="pl-8"
                   value={search}
                   onChange={(e) => {
@@ -219,7 +250,7 @@ export function ProductsManage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {categories.map((c) => (
+                  {filterCategories.map((c) => (
                     <SelectItem key={c} value={c}>{c}</SelectItem>
                   ))}
                 </SelectContent>
@@ -274,7 +305,7 @@ export function ProductsManage() {
                 <TableHead>상품</TableHead>
                 <TableHead className="hidden md:table-cell">카테고리</TableHead>
                 <TableHead>가격</TableHead>
-                <TableHead className="hidden md:table-cell">SKU</TableHead>
+                <TableHead className="hidden md:table-cell">재고</TableHead>
                 <TableHead className="hidden lg:table-cell">평점</TableHead>
                 <TableHead>상태</TableHead>
                 <TableHead className="text-right">작업</TableHead>
@@ -301,8 +332,16 @@ export function ProductsManage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-md bg-muted flex items-center justify-center shrink-0">
-                          <ImageIcon className="h-4 w-4 text-muted-foreground" />
+                        <div className="h-10 w-10 rounded-md bg-muted flex items-center justify-center shrink-0 overflow-hidden">
+                          {product.image ? (
+                            <img
+                              src={product.image}
+                              alt={product.name}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <ImageIcon className="h-4 w-4 text-muted-foreground" />
+                          )}
                         </div>
                         <div className="min-w-0">
                           <p className="font-medium text-foreground text-sm truncate">{product.name}</p>
@@ -326,7 +365,7 @@ export function ProductsManage() {
                       </div>
                     </TableCell>
                     <TableCell className="hidden md:table-cell">
-                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded text-foreground">{product.sku}</code>
+                      <span className="text-sm text-foreground">{product.stock ?? 0}개</span>
                     </TableCell>
                     <TableCell className="hidden lg:table-cell">
                       <div className="flex items-center gap-1 text-sm">
@@ -422,188 +461,15 @@ export function ProductsManage() {
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-foreground">
-              {editProduct && products.find((p) => p.id === editProduct.id) ? "상품 수정" : "상품 등록"}
-            </DialogTitle>
+            <DialogTitle className="text-foreground">상품 수정</DialogTitle>
             <DialogDescription>상품 기본 정보를 입력하세요.</DialogDescription>
           </DialogHeader>
           {editProduct && (
-            <Tabs defaultValue="basic">
-              <TabsList className="w-full">
-                <TabsTrigger value="basic" className="flex-1">기본 정보</TabsTrigger>
-                <TabsTrigger value="price" className="flex-1">가격/배송</TabsTrigger>
-                <TabsTrigger value="detail" className="flex-1">상세 정보</TabsTrigger>
-              </TabsList>
-              <TabsContent value="basic" className="space-y-4 mt-4">
-                <div className="space-y-2">
-                  <Label htmlFor="name">상품명 *</Label>
-                  <Input
-                    id="name"
-                    value={editProduct.name}
-                    onChange={(e) => setEditProduct({ ...editProduct, name: e.target.value })}
-                    placeholder="상품명을 입력하세요"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="sku">SKU *</Label>
-                    <Input
-                      id="sku"
-                      value={editProduct.sku}
-                      onChange={(e) => setEditProduct({ ...editProduct, sku: e.target.value })}
-                      placeholder="CAR-XX-001"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>카테고리 *</Label>
-                    <Select
-                      value={editProduct.category}
-                      onValueChange={(v) => setEditProduct({ ...editProduct, category: v })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="선택" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {categories.filter((c) => c !== "전체").map((c) => (
-                          <SelectItem key={c} value={c}>{c}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label>대표 이미지</Label>
-                  <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
-                    <ImageIcon className="h-8 w-8 mx-auto text-muted-foreground" />
-                    <p className="text-sm text-muted-foreground mt-2">
-                      {"이미지를 드래그하거나 클릭하여 업로드하세요"}
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">PNG, JPG 최대 2MB</p>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label>뱃지</Label>
-                  <Select
-                    value={editProduct.badge || "none"}
-                    onValueChange={(v) => setEditProduct({ ...editProduct, badge: v === "none" ? undefined : v })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="없음" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">없음</SelectItem>
-                      <SelectItem value="NEW">NEW</SelectItem>
-                      <SelectItem value="HOT">HOT</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </TabsContent>
-              <TabsContent value="price" className="space-y-4 mt-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="price">판매가 (원) *</Label>
-                    <Input
-                      id="price"
-                      type="number"
-                      value={editProduct.price}
-                      onChange={(e) => setEditProduct({ ...editProduct, price: Number(e.target.value) })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="originalPrice">정가 (원)</Label>
-                    <Input
-                      id="originalPrice"
-                      type="number"
-                      value={editProduct.originalPrice || ""}
-                      onChange={(e) =>
-                        setEditProduct({
-                          ...editProduct,
-                          originalPrice: e.target.value ? Number(e.target.value) : undefined,
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-                {editProduct.price > 0 && editProduct.originalPrice && editProduct.originalPrice > editProduct.price && (
-                  <div className="p-3 bg-primary/5 rounded-lg">
-                    <p className="text-sm text-foreground">
-                      할인율:{" "}
-                      <span className="font-bold text-red-600">
-                        {Math.round(((editProduct.originalPrice - editProduct.price) / editProduct.originalPrice) * 100)}%
-                      </span>
-                      {" | "}할인액: <span className="font-bold">{formatPrice(editProduct.originalPrice - editProduct.price)}</span>
-                    </p>
-                  </div>
-                )}
-                <div className="space-y-2">
-                  <Label>배송 방식</Label>
-                  <Select defaultValue="normal">
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="normal">일반배송</SelectItem>
-                      <SelectItem value="fast">빠른배송</SelectItem>
-                      <SelectItem value="pickup">매장픽업</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>배송비 (원)</Label>
-                    <Input type="number" defaultValue={3000} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>무료배송 조건 (원)</Label>
-                    <Input type="number" defaultValue={30000} placeholder="30000" />
-                  </div>
-                </div>
-              </TabsContent>
-              <TabsContent value="detail" className="space-y-4 mt-4">
-                <div className="space-y-2">
-                  <Label>상품 설명</Label>
-                  <Textarea
-                    rows={4}
-                    placeholder="상품 설명을 입력하세요..."
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>상세 스펙</Label>
-                  <div className="space-y-2">
-                    {[
-                      { label: "소재", placeholder: "예: ABS 플라스틱" },
-                      { label: "크기", placeholder: "예: 120 x 80 x 50mm" },
-                      { label: "무게", placeholder: "예: 150g" },
-                    ].map((spec) => (
-                      <div key={spec.label} className="flex gap-2">
-                        <Input value={spec.label} className="w-28" readOnly />
-                        <Input placeholder={spec.placeholder} className="flex-1" />
-                      </div>
-                    ))}
-                    <Button variant="outline" size="sm">
-                      <Plus className="h-3.5 w-3.5 mr-1" />
-                      스펙 항목 추가
-                    </Button>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label>발행 상태</Label>
-                  <Select
-                    value={editProduct.status}
-                    onValueChange={(v) => setEditProduct({ ...editProduct, status: v as Product["status"] })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="draft">초안</SelectItem>
-                      <SelectItem value="published">발행</SelectItem>
-                      <SelectItem value="scheduled">예약 발행</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </TabsContent>
-            </Tabs>
+            <ProductFormFields
+              product={editProduct}
+              categoryTree={categoryTree}
+              onChange={setEditProduct}
+            />
           )}
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
@@ -614,6 +480,7 @@ export function ProductsManage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
     </div>
   )
 }

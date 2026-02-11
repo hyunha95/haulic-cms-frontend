@@ -61,7 +61,11 @@ const mainMenuItems = [
     title: "상품 관리",
     icon: Package,
     href: "/products",
-    badge: "1,284",
+    sub: [
+      { title: "상품 목록", href: "/products" },
+      { title: "상품 등록", href: "/products/new" },
+      { title: "카테고리 관리", href: "/products/categories" },
+    ],
   },
   {
     title: "기획전/카테고리",
@@ -169,7 +173,7 @@ export function AdminSidebar() {
                     <SidebarMenuButton
                       asChild
                       tooltip={item.title}
-                      isActive={pathname === item.href}
+                      isActive={pathname === item.href || pathname.startsWith(`${item.href}/`)}
                     >
                       <Link href={item.href}>
                         <item.icon className="h-4 w-4" />
@@ -230,7 +234,7 @@ export function AdminSidebar() {
                     <SidebarMenuButton
                       asChild
                       tooltip={item.title}
-                      isActive={pathname === item.href}
+                      isActive={pathname === item.href || pathname.startsWith(`${item.href}/`)}
                     >
                       <Link href={item.href}>
                         <item.icon className="h-4 w-4" />
