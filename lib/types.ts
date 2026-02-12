@@ -131,6 +131,59 @@ export interface Product extends BaseEntity {
   isActive: boolean
 }
 
+export type ProductStatus = "draft" | "published" | "scheduled"
+export type ProductBadge = "NEW" | "HOT"
+export type UploadPurpose = "product_main" | "product_additional" | "product_detail"
+export type AllowedUploadContentType = "image/jpeg" | "image/png" | "image/webp"
+
+export interface CreateProductRequest {
+  name: string
+  category: string
+  price: number
+  stock: number
+  status?: ProductStatus
+  badge?: ProductBadge
+  image?: string
+  additionalImages?: string[]
+  detailDescriptionImage?: string
+  originalPrice?: number
+  isActive?: boolean
+}
+
+export interface ProductResponse extends CreateProductRequest {
+  id: string
+  status: ProductStatus
+  createdAt?: string
+  updatedAt?: string
+  createdBy?: string
+  updatedBy?: string
+  [key: string]: unknown
+}
+
+export interface PresignRequest {
+  fileName: string
+  contentType: AllowedUploadContentType
+  purpose: UploadPurpose
+}
+
+export interface PresignResponse {
+  uploadUrl: string
+  fileUrl: string
+  objectKey: string
+  expiresInSeconds: number
+}
+
+export interface ApiFieldError {
+  field: string
+  message: string
+}
+
+export interface ApiErrorResponse {
+  code: string
+  message: string
+  fieldErrors?: ApiFieldError[]
+}
+
 export interface ProductDetail {
   productId: string
   badges: string[]
