@@ -109,6 +109,9 @@ function validateFileType(
 function normalizeFormInput(input: CreateProductWithUploadsInput): NormalizedCreateProductInput {
   const fieldErrors: ApiFieldError[] = []
 
+  console.log("=== normalizeFormInput Debug ===")
+  console.log("Input:", input)
+
   const name = input.form.name.trim()
   if (!name) {
     fieldErrors.push({ field: "name", message: "name is required" })
@@ -156,6 +159,11 @@ function normalizeFormInput(input: CreateProductWithUploadsInput): NormalizedCre
   }
   const additionalFiles = additionalFilesRaw.slice(0, 9)
 
+  console.log("Validating file types...")
+  console.log("Main image:", input.images.main ? `${input.images.main.name} (${input.images.main.type})` : null)
+  console.log("Detail image:", input.images.detail ? `${input.images.detail.name} (${input.images.detail.type})` : null)
+  console.log("Additional images:", additionalFiles.map(f => `${f.name} (${f.type})`))
+
   validateFileType(input.images.main, "image", fieldErrors)
   validateFileType(input.images.detail, "detailDescriptionImage", fieldErrors)
   for (const file of additionalFiles) {
@@ -163,6 +171,7 @@ function normalizeFormInput(input: CreateProductWithUploadsInput): NormalizedCre
   }
 
   if (fieldErrors.length > 0) {
+    console.error("Validation failed with errors:", fieldErrors)
     throw createValidationError("Request validation failed.", fieldErrors)
   }
 

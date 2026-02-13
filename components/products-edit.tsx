@@ -2,13 +2,14 @@
 
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import {ArrowLeft, ChevronRight, ImageIcon, Plus, Save, Search, Trash2, AlertTriangle} from "lucide-react"
+import {ArrowLeft, ChevronRight, ImageIcon, Plus, Save, Search, Trash2, AlertTriangle, Loader2} from "lucide-react"
 import { useEffect, useMemo, useState, type ChangeEvent } from "react"
 import { useForm, Controller, type SubmitHandler } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 
 import { useCreateProductWithUploads } from "@/hooks/use-product-create"
+import { useProduct, useUpdateProduct } from "@/hooks/use-products"
 import { normalizeApiError } from "@/lib/api-error"
 import {
   DEFAULT_PRODUCT_CATEGORY_TREE,
@@ -18,7 +19,7 @@ import {
   readProductCategoryTreeFromStorage,
   type ProductCategoryNode,
 } from "@/lib/product-categories-storage"
-import type { ProductBadge, ProductStatus } from "@/lib/types"
+import type { ProductBadge, ProductStatus, UpdateProductCommand } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { KcCertificationSection } from "@/components/kc-certification-section"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -79,25 +80,21 @@ const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"]
 const ALLOWED_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"]
 
 function isValidImageFile(file: File): boolean {
-  // MIME type 체크
   if (ALLOWED_IMAGE_TYPES.includes(file.type)) {
     return true
   }
-
-  // 확장자로 체크
   const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0]
   return extension ? ALLOWED_IMAGE_EXTENSIONS.includes(extension) : false
 }
 
-interface ProductCreateImagesState {
+interface ProductEditImagesState {
   main: File | null
   additional: File[]
   detail: File | null
 }
 
-interface CreateSuccessState {
+interface UpdateSuccessState {
   productId: string
-  location?: string
 }
 
 interface ImageStats {
@@ -144,9 +141,17 @@ function formatImageDimensions(stats: ImageStats) {
   return `${stats.width} x ${stats.height}px`
 }
 
-export function ProductsCreate() {
+interface ProductsEditProps {
+  productId: string
+}
+
+export function ProductsEdit({ productId }: ProductsEditProps) {
   const router = useRouter()
-  const mutation = useCreateProductWithUploads()
+  const uploadMutation = useCreateProductWithUploads()
+  const updateMutation = useUpdateProduct()
+
+  // 기존 상품 데이터 로드
+  const { data: product, isLoading: isLoadingProduct, error: loadError } = useProduct(productId)
 
   // React Hook Form setup
   const {
@@ -156,6 +161,7 @@ export function ProductsCreate() {
     formState: { errors, isValid, isSubmitting },
     watch,
     setValue,
+    reset,
   } = useForm<ProductFormData>({
     resolver: zodResolver(productFormSchema),
     mode: "onChange",
@@ -171,13 +177,13 @@ export function ProductsCreate() {
     },
   })
 
-  const [images, setImages] = useState<ProductCreateImagesState>({
+  const [images, setImages] = useState<ProductEditImagesState>({
     main: null,
     additional: [],
     detail: null,
   })
   const [submitError, setSubmitError] = useState<string | null>(null)
-  const [success, setSuccess] = useState<CreateSuccessState | null>(null)
+  const [success, setSuccess] = useState<UpdateSuccessState | null>(null)
   const [categoryTree, setCategoryTree] = useState(DEFAULT_PRODUCT_CATEGORY_TREE)
   const [selectedPathIds, setSelectedPathIds] = useState<string[]>([])
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null)
@@ -190,9 +196,17 @@ export function ProductsCreate() {
     additional: [],
     detail: null,
   })
-  const [primaryImageCompression, setPrimaryImageCompression] = useState<ImageCompressionResult | null>(null)
-  const [additionalImageCompressions, setAdditionalImageCompressions] = useState<Record<string, ImageCompressionResult>>({})
-  const [detailImageCompression, setDetailImageCompression] = useState<ImageCompressionResult | null>(null)
+
+  // 기존 이미지 URL 저장 (변경되지 않은 경우 사용)
+  const [existingImageUrls, setExistingImageUrls] = useState<{
+    main?: string
+    additional: string[]
+    detail?: string
+  }>({
+    main: undefined,
+    additional: [],
+    detail: undefined,
+  })
 
   // Watch form values
   const categoryValue = watch("category")
@@ -209,11 +223,40 @@ export function ProductsCreate() {
     setSelectedPathIds(pathIds)
   }, [categoryTree, categoryValue])
 
-  const additionalCount = images.additional.length
-  const progressEntries = Object.entries(mutation.uploadProgress) as Array<[string, number]>
+  // 상품 데이터 로드 시 폼 초기화
+  useEffect(() => {
+    if (product) {
+      reset({
+        name: product.name,
+        category: product.category,
+        price: String(product.price),
+        stock: String(product.stock),
+        status: product.status,
+        badge: product.badge || "none",
+        originalPrice: product.originalPrice ? String(product.originalPrice) : "",
+        isActive: product.isActive ?? false,
+      })
+
+      // 기존 이미지 URL 저장
+      setExistingImageUrls({
+        main: product.image,
+        additional: product.additionalImages || [],
+        detail: product.detailDescriptionImage,
+      })
+
+      // 기존 이미지 미리보기 설정
+      setImagePreviews({
+        main: product.image || null,
+        additional: product.additionalImages || [],
+        detail: product.detailDescriptionImage || null,
+      })
+    }
+  }, [product, reset])
+
+  const additionalCount = images.additional.length + (existingImageUrls.additional?.length || 0)
+  const progressEntries = Object.entries(uploadMutation.uploadProgress) as Array<[string, number]>
 
   const depth1Options = categoryTree
-
   const depth2Options = useMemo(() => {
     const depth1Node = findNodeById(depth1Options, selectedPathIds[0] || "")
     return depth1Node?.children || []
@@ -232,196 +275,6 @@ export function ProductsCreate() {
   const categoryColumns = [depth1Options, depth2Options, depth3Options, depth4Options]
   const selectedPathLabel = getCategoryPathNamesByIds(categoryTree, selectedPathIds).join(" > ")
 
-  const readBlobAsDataUrl = (blob: Blob) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => {
-        if (typeof reader.result === "string") {
-          resolve(reader.result)
-          return
-        }
-        reject(new Error("이미지 파일을 읽을 수 없습니다."))
-      }
-      reader.onerror = () => reject(new Error("이미지 파일을 읽을 수 없습니다."))
-      reader.readAsDataURL(blob)
-    })
-
-  const loadImageElement = (src: string) =>
-    new Promise<HTMLImageElement>((resolve, reject) => {
-      const image = new Image()
-      image.onload = () => resolve(image)
-      image.onerror = () => reject(new Error("이미지를 불러올 수 없습니다."))
-      image.src = src
-    })
-
-  const canvasToBlob = (canvas: HTMLCanvasElement, type: string, quality?: number) =>
-    new Promise<Blob | null>((resolve) => {
-      canvas.toBlob((blob) => resolve(blob), type, quality)
-    })
-
-  const dataUrlToFile = (dataUrl: string, fileName: string, mimeType: string): File => {
-    // data URL을 Base64 디코딩하여 File 객체 생성
-    const arr = dataUrl.split(',')
-    const bstr = atob(arr[1])
-    let n = bstr.length
-    const u8arr = new Uint8Array(n)
-    while (n--) {
-      u8arr[n] = bstr.charCodeAt(n)
-    }
-    const file = new File([u8arr], fileName, { type: mimeType })
-    console.log(`Created file: ${file.name}, type: ${file.type}, size: ${file.size}`)
-    return file
-  }
-
-  const readImageFile = async (file: File): Promise<ImageCompressionResult & { compressedFile?: File }> => {
-    console.log(`Reading image file: ${file.name}, type: ${file.type}, size: ${file.size}`)
-    const originalImageData = await readBlobAsDataUrl(file)
-    const fallbackStats: ImageStats = {
-      width: 0,
-      height: 0,
-      bytes: file.size,
-      format: file.type || "image/unknown",
-    }
-
-    let originalImage: HTMLImageElement
-    try {
-      originalImage = await loadImageElement(originalImageData)
-    } catch {
-      return {
-        imageData: originalImageData,
-        original: fallbackStats,
-        compressed: fallbackStats,
-        usedCompressed: false,
-      }
-    }
-
-    const originalStats: ImageStats = {
-      width: originalImage.naturalWidth,
-      height: originalImage.naturalHeight,
-      bytes: file.size,
-      format: file.type || "image/unknown",
-    }
-
-    // 이미지가 충분히 작으면 압축하지 않음
-    const maxSide = Math.max(originalImage.naturalWidth, originalImage.naturalHeight)
-    const fileSizeKB = file.size / 1024
-    const isSmallEnough = fileSizeKB <= 500 && maxSide <= 1500
-
-    if (file.type === "image/gif" || file.type === "image/svg+xml" || isSmallEnough) {
-      return {
-        imageData: originalImageData,
-        original: originalStats,
-        compressed: originalStats,
-        usedCompressed: false,
-      }
-    }
-
-    try {
-      const maxSide = 2000
-      const longestSide = Math.max(originalImage.naturalWidth, originalImage.naturalHeight)
-      const resizeRatio = longestSide > maxSide ? maxSide / longestSide : 1
-      const targetWidth = Math.max(1, Math.round(originalImage.naturalWidth * resizeRatio))
-      const targetHeight = Math.max(1, Math.round(originalImage.naturalHeight * resizeRatio))
-      const canvas = document.createElement("canvas")
-      canvas.width = targetWidth
-      canvas.height = targetHeight
-
-      const context = canvas.getContext("2d")
-      if (!context) {
-        return {
-          imageData: originalImageData,
-          original: originalStats,
-          compressed: originalStats,
-          usedCompressed: false,
-        }
-      }
-
-      context.drawImage(originalImage, 0, 0, targetWidth, targetHeight)
-
-      const outputType = file.type === "image/png" || file.type === "image/webp" ? "image/webp" : "image/jpeg"
-      const qualities = [0.82, 0.72, 0.62]
-
-      for (const quality of qualities) {
-        const blob = await canvasToBlob(canvas, outputType, quality)
-        if (!blob) {
-          continue
-        }
-
-        if (blob.size <= file.size * 0.98 || quality === qualities[qualities.length - 1]) {
-          if (blob.size >= file.size) {
-            return {
-              imageData: originalImageData,
-              original: originalStats,
-              compressed: originalStats,
-              usedCompressed: false,
-            }
-          }
-
-          const compressedImageData = await readBlobAsDataUrl(blob)
-
-          // 압축된 이미지를 File 객체로 변환
-          const fileExtension = outputType === "image/webp" ? "webp" : "jpg"
-          const originalNameWithoutExt = file.name.replace(/\.[^.]+$/, "")
-          const compressedFileName = `${originalNameWithoutExt}_compressed.${fileExtension}`
-          const compressedFile = dataUrlToFile(compressedImageData, compressedFileName, outputType)
-
-          console.log(`Compression result for ${file.name}:`, {
-            original: `${file.type}, ${file.size} bytes`,
-            compressed: `${compressedFile.type}, ${compressedFile.size} bytes`,
-            reduction: `${Math.round((1 - compressedFile.size / file.size) * 100)}%`
-          })
-
-          return {
-            imageData: compressedImageData,
-            original: originalStats,
-            compressed: {
-              width: targetWidth,
-              height: targetHeight,
-              bytes: blob.size,
-              format: outputType,
-            },
-            usedCompressed: true,
-            compressedFile,
-          }
-        }
-      }
-
-      return {
-        imageData: originalImageData,
-        original: originalStats,
-        compressed: originalStats,
-        usedCompressed: false,
-      }
-    } catch {
-      return {
-        imageData: originalImageData,
-        original: originalStats,
-        compressed: originalStats,
-        usedCompressed: false,
-      }
-    }
-  }
-
-  const renderCompressionInfo = (data: ImageCompressionResult | null) => {
-    if (!data) return null
-
-    const savedPercent =
-      data.original.bytes > 0 ? Math.max(0, Math.round((1 - data.compressed.bytes / data.original.bytes) * 100)) : 0
-
-    return (
-      <div className="mt-2 rounded-md border border-border/70 bg-background/70 p-2 text-[11px] text-muted-foreground">
-        <p className="font-medium text-foreground/90">이미지 정보</p>
-        <p>
-          원본: {formatImageDimensions(data.original)} / {formatImageBytes(data.original.bytes)}
-        </p>
-        <p>
-          압축: {formatImageDimensions(data.compressed)} / {formatImageBytes(data.compressed.bytes)}{" "}
-          ({data.usedCompressed ? `${savedPercent}% 감소` : "원본 유지"})
-        </p>
-      </div>
-    )
-  }
-
   const handleSelectDepth = (depth: number, nodeId: string) => {
     const nextPathIds = [...selectedPathIds.slice(0, depth - 1), nodeId]
     setSelectedPathIds(nextPathIds)
@@ -434,33 +287,22 @@ export function ProductsCreate() {
     const file = event.target.files?.[0] ?? null
 
     if (file) {
-      // 파일 형식 검증
       if (!isValidImageFile(file)) {
         setSubmitError(`지원하지 않는 파일 형식입니다. JPG, PNG, WebP 파일만 업로드 가능합니다. (선택한 파일: ${file.name})`)
         event.target.value = ""
         return
       }
 
-      try {
-        const imageResult = await readImageFile(file)
-        setPrimaryImageCompression(imageResult)
-        setImagePreviews((prev) => ({ ...prev, main: imageResult.imageData }))
+      setImages((prev) => ({ ...prev, main: file }))
 
-        // 압축된 파일이 있으면 그것을 사용, 없으면 원본 사용
-        const fileToUpload = imageResult.compressedFile || file
-        setImages((prev) => ({ ...prev, main: fileToUpload }))
-      } catch {
-        setImages((prev) => ({ ...prev, main: file }))
-        const reader = new FileReader()
-        reader.onload = () => {
-          setImagePreviews((prev) => ({ ...prev, main: reader.result as string }))
-        }
-        reader.readAsDataURL(file)
+      // 미리보기 생성
+      const reader = new FileReader()
+      reader.onload = () => {
+        setImagePreviews((prev) => ({ ...prev, main: reader.result as string }))
       }
+      reader.readAsDataURL(file)
     } else {
       setImages((prev) => ({ ...prev, main: null }))
-      setImagePreviews((prev) => ({ ...prev, main: null }))
-      setPrimaryImageCompression(null)
     }
 
     event.target.value = ""
@@ -470,33 +312,21 @@ export function ProductsCreate() {
     const file = event.target.files?.[0] ?? null
 
     if (file) {
-      // 파일 형식 검증
       if (!isValidImageFile(file)) {
         setSubmitError(`지원하지 않는 파일 형식입니다. JPG, PNG, WebP 파일만 업로드 가능합니다. (선택한 파일: ${file.name})`)
         event.target.value = ""
         return
       }
 
-      try {
-        const imageResult = await readImageFile(file)
-        setDetailImageCompression(imageResult)
-        setImagePreviews((prev) => ({ ...prev, detail: imageResult.imageData }))
+      setImages((prev) => ({ ...prev, detail: file }))
 
-        // 압축된 파일이 있으면 그것을 사용, 없으면 원본 사용
-        const fileToUpload = imageResult.compressedFile || file
-        setImages((prev) => ({ ...prev, detail: fileToUpload }))
-      } catch {
-        setImages((prev) => ({ ...prev, detail: file }))
-        const reader = new FileReader()
-        reader.onload = () => {
-          setImagePreviews((prev) => ({ ...prev, detail: reader.result as string }))
-        }
-        reader.readAsDataURL(file)
+      const reader = new FileReader()
+      reader.onload = () => {
+        setImagePreviews((prev) => ({ ...prev, detail: reader.result as string }))
       }
+      reader.readAsDataURL(file)
     } else {
       setImages((prev) => ({ ...prev, detail: null }))
-      setImagePreviews((prev) => ({ ...prev, detail: null }))
-      setDetailImageCompression(null)
     }
 
     event.target.value = ""
@@ -508,7 +338,6 @@ export function ProductsCreate() {
       return
     }
 
-    // 파일 형식 검증
     const invalidFiles = selectedFiles.filter(file => !isValidImageFile(file))
     if (invalidFiles.length > 0) {
       const fileNames = invalidFiles.map(f => f.name).join(", ")
@@ -518,62 +347,65 @@ export function ProductsCreate() {
     }
 
     const currentFiles = images.additional
-    const allFiles = [...currentFiles, ...selectedFiles].slice(0, 9)
+    const currentExistingCount = existingImageUrls.additional.length
+    const availableSlots = 9 - currentExistingCount
+    const newFiles = [...currentFiles, ...selectedFiles].slice(0, availableSlots)
 
-    // Generate previews and compression info for all files
-    try {
-      const uploadedResults = await Promise.all(allFiles.map((file) => readImageFile(file)))
-      const uploadedImages = uploadedResults.map((item) => item.imageData)
+    setImages((prev) => ({ ...prev, additional: newFiles }))
 
-      // 압축된 파일이 있으면 사용, 없으면 원본 사용
-      const filesToUpload = uploadedResults.map((result, index) => result.compressedFile || allFiles[index])
-
-      setImages((prev) => ({ ...prev, additional: filesToUpload }))
-      setImagePreviews((prev) => ({ ...prev, additional: uploadedImages }))
-
-      const compressionMap: Record<string, ImageCompressionResult> = {}
-      for (const result of uploadedResults) {
-        compressionMap[result.imageData] = result
-      }
-      setAdditionalImageCompressions(compressionMap)
-    } catch {
-      // Fallback to simple preview
-      setImages((prev) => ({ ...prev, additional: allFiles }))
-
-      Promise.all(
-        allFiles.map((file) => {
-          return new Promise<string>((resolve) => {
-            const reader = new FileReader()
-            reader.onload = () => resolve(reader.result as string)
-            reader.readAsDataURL(file)
-          })
+    // 미리보기 생성
+    Promise.all(
+      newFiles.map((file) => {
+        return new Promise<string>((resolve) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result as string)
+          reader.readAsDataURL(file)
         })
-      ).then((previews) => {
-        setImagePreviews((prev) => ({ ...prev, additional: previews }))
       })
-    }
+    ).then((previews) => {
+      setImagePreviews((prev) => ({
+        ...prev,
+        additional: [...existingImageUrls.additional, ...previews]
+      }))
+    })
 
     event.target.value = ""
   }
 
   const handleRemoveAdditionalImage = (index: number) => {
-    const targetImageUrl = imagePreviews.additional[index]
-    if (targetImageUrl) {
-      setAdditionalImageCompressions((prev) => {
-        const next = { ...prev }
-        delete next[targetImageUrl]
-        return next
-      })
+    const existingCount = existingImageUrls.additional.length
+
+    if (index < existingCount) {
+      // 기존 이미지 제거
+      setExistingImageUrls((prev) => ({
+        ...prev,
+        additional: prev.additional.filter((_, i) => i !== index)
+      }))
+    } else {
+      // 새로 추가한 이미지 제거
+      const newImageIndex = index - existingCount
+      setImages((prev) => ({
+        ...prev,
+        additional: prev.additional.filter((_, i) => i !== newImageIndex)
+      }))
     }
 
-    setImages((prev) => ({
-      ...prev,
-      additional: prev.additional.filter((_, currentIndex) => currentIndex !== index),
-    }))
     setImagePreviews((prev) => ({
       ...prev,
-      additional: prev.additional.filter((_, currentIndex) => currentIndex !== index),
+      additional: prev.additional.filter((_, i) => i !== index)
     }))
+  }
+
+  const handleRemoveMainImage = () => {
+    setImages((prev) => ({ ...prev, main: null }))
+    setExistingImageUrls((prev) => ({ ...prev, main: undefined }))
+    setImagePreviews((prev) => ({ ...prev, main: null }))
+  }
+
+  const handleRemoveDetailImage = () => {
+    setImages((prev) => ({ ...prev, detail: null }))
+    setExistingImageUrls((prev) => ({ ...prev, detail: undefined }))
+    setImagePreviews((prev) => ({ ...prev, detail: null }))
   }
 
   const handleOpenImagePreview = (src: string, alt: string) => {
@@ -593,38 +425,66 @@ export function ProductsCreate() {
     console.log("=== Form Submission Debug ===")
     console.log("Form data:", data)
     console.log("Images:", {
-      main: images.main ? `${images.main.name} (${images.main.type}, ${images.main.size} bytes)` : null,
+      main: images.main ? `${images.main.name} (${images.main.type}, ${images.main.size} bytes)` : "기존 이미지 유지",
       additional: images.additional.map(f => `${f.name} (${f.type}, ${f.size} bytes)`),
-      detail: images.detail ? `${images.detail.name} (${images.detail.type}, ${images.detail.size} bytes)` : null,
+      detail: images.detail ? `${images.detail.name} (${images.detail.type}, ${images.detail.size} bytes)` : "기존 이미지 유지",
     })
 
     try {
-      const result = await mutation.mutateAsync({
-        form: {
-          name: data.name,
-          category: data.category,
-          price: Number(data.price),
-          stock: Number(data.stock),
-          status: data.status,
-          badge: data.badge === "none" ? undefined : data.badge,
-          originalPrice: data.originalPrice && data.originalPrice.trim().length > 0 ? Number(data.originalPrice) : undefined,
-          isActive: data.isActive,
-        },
-        images: {
-          main: images.main,
-          additional: images.additional,
-          detail: images.detail,
-        },
-      })
+      // 이미지가 새로 업로드된 경우에만 업로드 처리
+      let uploadedImageUrls = {
+        main: existingImageUrls.main,
+        additional: existingImageUrls.additional,
+        detail: existingImageUrls.detail,
+      }
+
+      // 새 이미지가 있으면 업로드
+      if (images.main || images.additional.length > 0 || images.detail) {
+        const uploadResult = await uploadMutation.mutateAsync({
+          form: {
+            name: data.name,
+            category: data.category,
+            price: Number(data.price),
+            stock: Number(data.stock),
+            status: data.status,
+            badge: data.badge === "none" ? undefined : data.badge,
+            originalPrice: data.originalPrice && data.originalPrice.trim().length > 0 ? Number(data.originalPrice) : undefined,
+            isActive: data.isActive,
+          },
+          images: {
+            main: images.main,
+            additional: images.additional,
+            detail: images.detail,
+          },
+        })
+
+        // 업로드된 이미지 URL 사용
+        if (images.main) uploadedImageUrls.main = uploadResult.product.image
+        if (images.additional.length > 0) {
+          uploadedImageUrls.additional = [...existingImageUrls.additional, ...(uploadResult.product.additionalImages || [])]
+        }
+        if (images.detail) uploadedImageUrls.detail = uploadResult.product.detailDescriptionImage
+      }
+
+      // 상품 업데이트
+      const updateData: UpdateProductCommand = {
+        name: data.name,
+        category: data.category,
+        price: Number(data.price),
+        stock: Number(data.stock),
+        status: data.status,
+        badge: data.badge === "none" ? undefined : data.badge,
+        originalPrice: data.originalPrice && data.originalPrice.trim().length > 0 ? Number(data.originalPrice) : undefined,
+        isActive: data.isActive,
+        image: uploadedImageUrls.main,
+        additionalImages: uploadedImageUrls.additional,
+        detailDescriptionImage: uploadedImageUrls.detail,
+      }
+
+      await updateMutation.mutateAsync({ id: productId, data: updateData })
 
       setSuccess({
-        productId: result.product.id,
-        location: result.location,
-      })
-      setImages({
-        main: null,
-        additional: [],
-        detail: null,
+        productId: productId,
       })
 
       // 1.5초 후 상품 목록 페이지로 리다이렉트
@@ -633,10 +493,9 @@ export function ProductsCreate() {
       }, 1500)
     } catch (error) {
       console.error("=== Submit Error ===", error)
-      const normalizedError = normalizeApiError(error, "상품 생성 요청에 실패했습니다.")
+      const normalizedError = normalizeApiError(error, "상품 수정 요청에 실패했습니다.")
       console.error("Normalized error:", normalizedError)
 
-      // fieldErrors가 있으면 상세 정보 출력
       if (normalizedError.fieldErrors && normalizedError.fieldErrors.length > 0) {
         console.error("Field errors:", normalizedError.fieldErrors)
         const errorMessages = normalizedError.fieldErrors.map(fe => `${fe.field}: ${fe.message}`).join(", ")
@@ -645,6 +504,82 @@ export function ProductsCreate() {
         setSubmitError(normalizedError.message)
       }
     }
+  }
+
+  // 로딩 상태
+  if (isLoadingProduct) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
+          <p className="mt-4 text-sm text-muted-foreground">상품 정보를 불러오는 중...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // 에러 상태
+  if (loadError) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <Button variant="ghost" size="sm" asChild className="-ml-2 mb-2">
+              <Link href="/products">
+                <ArrowLeft className="h-4 w-4 mr-1" />
+                상품 관리로 돌아가기
+              </Link>
+            </Button>
+            <h1 className="text-2xl font-bold text-foreground">상품 수정</h1>
+          </div>
+        </div>
+
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>상품을 불러올 수 없습니다</AlertTitle>
+          <AlertDescription>
+            {loadError.message}
+            <div className="mt-4 flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => router.push("/products")}>
+                목록으로 돌아가기
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      </div>
+    )
+  }
+
+  // 상품이 없는 경우
+  if (!product) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <Button variant="ghost" size="sm" asChild className="-ml-2 mb-2">
+              <Link href="/products">
+                <ArrowLeft className="h-4 w-4 mr-1" />
+                상품 관리로 돌아가기
+              </Link>
+            </Button>
+            <h1 className="text-2xl font-bold text-foreground">상품 수정</h1>
+          </div>
+        </div>
+
+        <Alert>
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>상품을 찾을 수 없습니다</AlertTitle>
+          <AlertDescription>
+            요청하신 상품이 존재하지 않습니다.
+            <div className="mt-4">
+              <Button variant="outline" size="sm" onClick={() => router.push("/products")}>
+                목록으로 돌아가기
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      </div>
+    )
   }
 
   return (
@@ -657,21 +592,18 @@ export function ProductsCreate() {
               상품 관리로 돌아가기
             </Link>
           </Button>
-          <h1 className="text-2xl font-bold text-foreground">상품 등록</h1>
+          <h1 className="text-2xl font-bold text-foreground">상품 수정</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            신규 상품 정보를 입력하고 저장하세요.
+            상품 정보를 수정하고 저장하세요.
           </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" asChild>
             <Link href="/products">취소</Link>
           </Button>
-          <Button variant="outline" disabled={!isValid || mutation.isPending || isSubmitting}>
-            임시저장
-          </Button>
-          <Button type="submit" form="product-form" disabled={!isValid || mutation.isPending || isSubmitting}>
+          <Button type="submit" form="product-form" disabled={!isValid || uploadMutation.isPending || updateMutation.isPending || isSubmitting}>
             <Save className="h-4 w-4 mr-1" />
-            {mutation.isPending || isSubmitting ? "저장 중..." : "저장"}
+            {uploadMutation.isPending || updateMutation.isPending || isSubmitting ? "저장 중..." : "저장"}
           </Button>
         </div>
       </div>
@@ -705,10 +637,9 @@ export function ProductsCreate() {
 
       {success ? (
         <Alert>
-          <AlertTitle>상품 생성 완료</AlertTitle>
+          <AlertTitle>상품 수정 완료</AlertTitle>
           <AlertDescription className="space-y-1">
-            <p>생성된 상품 ID: {success.productId}</p>
-            {success.location ? <p>Location: {success.location}</p> : null}
+            <p>상품 ID: {success.productId}</p>
           </AlertDescription>
         </Alert>
       ) : null}
@@ -900,7 +831,7 @@ export function ProductsCreate() {
                 {imagePreviews.main ? (
                   <div className="rounded-md border border-border bg-muted/30 p-4">
                     <p className="mb-2 text-xs font-medium text-foreground">
-                      파일명: {images.main?.name || "알 수 없음"}
+                      {images.main ? `새 파일: ${images.main.name}` : "기존 이미지"}
                     </p>
                     <div className="relative h-56 overflow-hidden rounded-md bg-muted">
                       <img
@@ -924,16 +855,11 @@ export function ProductsCreate() {
                       variant="ghost"
                       size="sm"
                       className="mt-2 text-destructive hover:text-destructive"
-                      onClick={() => {
-                        setImages((prev) => ({ ...prev, main: null }))
-                        setImagePreviews((prev) => ({ ...prev, main: null }))
-                        setPrimaryImageCompression(null)
-                      }}
+                      onClick={handleRemoveMainImage}
                     >
                       <Trash2 className="h-3.5 w-3.5 mr-1" />
                       대표 이미지 제거
                     </Button>
-                    {renderCompressionInfo(primaryImageCompression)}
                   </div>
                 ) : (
                   <div className="border-2 border-dashed border-border rounded-lg p-10 text-center">
@@ -964,41 +890,43 @@ export function ProductsCreate() {
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                    {imagePreviews.additional.map((imageUrl, index) => (
-                      <div key={`${imageUrl}-${index}`} className="rounded-md border border-border p-3">
-                        <p className="mb-2 truncate text-xs font-medium text-foreground" title={images.additional[index]?.name}>
-                          파일명: {images.additional[index]?.name || "알 수 없음"}
-                        </p>
-                        <div className="relative h-36 overflow-hidden rounded-md bg-muted">
-                          <img
-                            src={imageUrl}
-                            alt={`추가 이미지 ${index + 1}`}
-                            className="h-full w-full object-cover"
-                          />
+                    {imagePreviews.additional.map((imageUrl, index) => {
+                      const isExisting = index < existingImageUrls.additional.length
+                      return (
+                        <div key={`${imageUrl}-${index}`} className="rounded-md border border-border p-3">
+                          <p className="mb-2 truncate text-xs font-medium text-foreground">
+                            {isExisting ? "기존 이미지" : `새 파일: ${images.additional[index - existingImageUrls.additional.length]?.name}`}
+                          </p>
+                          <div className="relative h-36 overflow-hidden rounded-md bg-muted">
+                            <img
+                              src={imageUrl}
+                              alt={`추가 이미지 ${index + 1}`}
+                              className="h-full w-full object-cover"
+                            />
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="icon"
+                              className="absolute right-2 top-2 h-8 w-8 border border-border bg-background/90 backdrop-blur-sm hover:bg-background"
+                              onClick={() => handleOpenImagePreview(imageUrl, `추가 이미지 ${index + 1} 미리보기`)}
+                              aria-label={`추가 이미지 ${index + 1} 확대 보기`}
+                            >
+                              <Search className="h-4 w-4" />
+                            </Button>
+                          </div>
                           <Button
                             type="button"
-                            variant="secondary"
-                            size="icon"
-                            className="absolute right-2 top-2 h-8 w-8 border border-border bg-background/90 backdrop-blur-sm hover:bg-background"
-                            onClick={() => handleOpenImagePreview(imageUrl, `추가 이미지 ${index + 1} 미리보기`)}
-                            aria-label={`추가 이미지 ${index + 1} 확대 보기`}
+                            variant="ghost"
+                            size="sm"
+                            className="mt-1 w-full text-destructive hover:text-destructive"
+                            onClick={() => handleRemoveAdditionalImage(index)}
                           >
-                            <Search className="h-4 w-4" />
+                            <Trash2 className="h-3.5 w-3.5 mr-1" />
+                            제거
                           </Button>
                         </div>
-                        {renderCompressionInfo(additionalImageCompressions[imageUrl] ?? null)}
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="mt-1 w-full text-destructive hover:text-destructive"
-                          onClick={() => handleRemoveAdditionalImage(index)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5 mr-1" />
-                          제거
-                        </Button>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
               </div>
@@ -1015,7 +943,7 @@ export function ProductsCreate() {
                 {imagePreviews.detail ? (
                   <div className="rounded-md border border-border bg-muted/30 p-3">
                     <p className="mb-2 text-xs font-medium text-foreground">
-                      파일명: {images.detail?.name || "알 수 없음"}
+                      {images.detail ? `새 파일: ${images.detail.name}` : "기존 이미지"}
                     </p>
                     <div className="max-h-[420px] overflow-auto rounded-md bg-muted p-2">
                       <img
@@ -1029,16 +957,11 @@ export function ProductsCreate() {
                       variant="ghost"
                       size="sm"
                       className="mt-2 text-destructive hover:text-destructive"
-                      onClick={() => {
-                        setImages((prev) => ({ ...prev, detail: null }))
-                        setImagePreviews((prev) => ({ ...prev, detail: null }))
-                        setDetailImageCompression(null)
-                      }}
+                      onClick={handleRemoveDetailImage}
                     >
                       <Trash2 className="h-3.5 w-3.5 mr-1" />
                       상세설명 이미지 제거
                     </Button>
-                    {renderCompressionInfo(detailImageCompression)}
                   </div>
                 ) : (
                   <div className="border-2 border-dashed border-border rounded-lg p-6 text-center">
@@ -1049,79 +972,7 @@ export function ProductsCreate() {
               </div>
             </div>
 
-            <div className="space-y-4 rounded-md border border-border p-4">
-              <h2 className="text-base font-semibold">배송</h2>
-
-              <div className="space-y-2">
-                <Label htmlFor="shipping-method">배송 방식</Label>
-                <Select defaultValue="normal">
-                  <SelectTrigger id="shipping-method">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="normal">일반배송</SelectItem>
-                    <SelectItem value="fast">빠른배송</SelectItem>
-                    <SelectItem value="pickup">매장픽업</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="shipping-fee">배송비 (원)</Label>
-                  <Input
-                    id="shipping-fee"
-                    type="number"
-                    defaultValue={3000}
-                    placeholder="3000"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="free-shipping-threshold">무료배송 조건 (원)</Label>
-                  <Input
-                    id="free-shipping-threshold"
-                    type="number"
-                    defaultValue={30000}
-                    placeholder="30000"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-4 rounded-md border border-border p-4">
-              <h2 className="text-base font-semibold">상세 정보</h2>
-
-              <div className="space-y-2">
-                <Label htmlFor="description">상품 설명</Label>
-                <Textarea
-                  id="description"
-                  rows={4}
-                  placeholder="상품 설명을 입력하세요..."
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label>상세 스펙</Label>
-                <div className="space-y-2">
-                  {[
-                    { label: "소재", placeholder: "예: ABS 플라스틱" },
-                    { label: "크기", placeholder: "예: 120 x 80 x 50mm" },
-                    { label: "무게", placeholder: "예: 150g" },
-                  ].map((spec) => (
-                    <div key={spec.label} className="flex gap-2">
-                      <Input value={spec.label} className="w-28" readOnly />
-                      <Input placeholder={spec.placeholder} className="flex-1" />
-                    </div>
-                  ))}
-                  <Button type="button" variant="outline" size="sm">
-                    <Plus className="h-3.5 w-3.5 mr-1" />
-                    스펙 항목 추가
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            {mutation.isPending && progressEntries.length > 0 ? (
+            {uploadMutation.isPending && progressEntries.length > 0 ? (
               <div className="space-y-3 rounded-md border border-border p-4">
                 <p className="text-sm font-medium text-foreground">업로드 진행 상태</p>
                 {progressEntries.map(([key, value]) => (

@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useState, useMemo, useEffect } from "react"
 import {
   Plus,
@@ -16,8 +17,8 @@ import {
   ChevronRight,
   X,
   ImageIcon,
+  AlertCircle, Loader2,
 } from "lucide-react"
-import { ProductFormFields } from "@/components/product-form-fields"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -33,14 +34,6 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog"
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -54,15 +47,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { KcCertificationSection } from "@/components/kc-certification-section"
-import { mockProducts } from "@/lib/mock-data"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   DEFAULT_PRODUCT_CATEGORY_TREE,
   flattenCategoryTree,
   readProductCategoryTreeFromStorage,
 } from "@/lib/product-categories-storage"
-import { readProductsFromStorage, writeProductsToStorage } from "@/lib/products-storage"
-import type { Product } from "@/lib/types"
+import { useProducts, useDeleteProduct, useBulkDeleteProducts } from "@/hooks/use-products"
+import type { ProductResponse } from "@/lib/types"
 
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, { label: string; className: string }> = {
@@ -90,35 +82,37 @@ function formatPrice(value: number) {
 const ITEMS_PER_PAGE = 10
 
 export function ProductsManage() {
-  const [products, setProducts] = useState<Product[]>(mockProducts)
+  const router = useRouter()
   const [search, setSearch] = useState("")
   const [categoryFilter, setCategoryFilter] = useState("전체")
   const [statusFilter, setStatusFilter] = useState("전체")
   const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const [page, setPage] = useState(1)
-  const [editProduct, setEditProduct] = useState<Product | null>(null)
-  const [isDialogOpen, setIsDialogOpen] = useState(false)
-  const [isStorageInitialized, setIsStorageInitialized] = useState(false)
+  const [page, setPage] = useState(0) // 백엔드는 0-based 인덱스
   const [categoryTree, setCategoryTree] = useState(DEFAULT_PRODUCT_CATEGORY_TREE)
 
   useEffect(() => {
-    const storedProducts = readProductsFromStorage()
-    if (storedProducts) {
-      setProducts(storedProducts)
-    }
-
     const storedCategoryTree = readProductCategoryTreeFromStorage()
     if (storedCategoryTree && storedCategoryTree.length > 0) {
       setCategoryTree(storedCategoryTree)
     }
-
-    setIsStorageInitialized(true)
   }, [])
 
-  useEffect(() => {
-    if (!isStorageInitialized) return
-    writeProductsToStorage(products)
-  }, [products, isStorageInitialized])
+  // API 호출
+  const { data: productsPage, isLoading, error, refetch } = useProducts({
+    name: search || undefined,
+    category: categoryFilter !== "전체" ? categoryFilter : undefined,
+    page,
+    size: ITEMS_PER_PAGE,
+    sort: "createdAt",
+    direction: "DESC",
+  })
+
+  const deleteMutation = useDeleteProduct()
+  const bulkDeleteMutation = useBulkDeleteProducts()
+
+  const products = productsPage?.content ?? []
+  const totalPages = productsPage?.totalPages ?? 0
+  const totalElements = productsPage?.totalElements ?? 0
 
   const filterCategories = useMemo(() => {
     const values: string[] = []
@@ -141,28 +135,19 @@ export function ProductsManage() {
     return ["전체", ...values]
   }, [categoryTree, products])
 
-  const filtered = useMemo(() => {
-    return products.filter((p) => {
-      const matchSearch = p.name.toLowerCase().includes(search.toLowerCase())
-      const matchCategory =
-        categoryFilter === "전체" ||
-        p.category === categoryFilter ||
-        p.category.startsWith(`${categoryFilter} > `)
-      const matchStatus = statusFilter === "전체" || p.status === statusFilter
-      return matchSearch && matchCategory && matchStatus
-    })
-  }, [products, search, categoryFilter, statusFilter])
+  // 클라이언트 측 상태 필터링 (status는 아직 백엔드에서 지원 안함)
+  const filteredProducts = useMemo(() => {
+    if (statusFilter === "전체") return products
+    return products.filter((p) => p.status === statusFilter)
+  }, [products, statusFilter])
 
-  const totalPages = Math.ceil(filtered.length / ITEMS_PER_PAGE)
-  const paged = filtered.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE)
-
-  const allSelected = paged.length > 0 && paged.every((p) => selectedIds.includes(p.id))
+  const allSelected = filteredProducts.length > 0 && filteredProducts.every((p) => selectedIds.includes(p.id))
 
   const toggleAll = () => {
     if (allSelected) {
-      setSelectedIds(selectedIds.filter((id) => !paged.find((p) => p.id === id)))
+      setSelectedIds([])
     } else {
-      setSelectedIds([...new Set([...selectedIds, ...paged.map((p) => p.id)])])
+      setSelectedIds(filteredProducts.map((p) => p.id))
     }
   }
 
@@ -170,31 +155,30 @@ export function ProductsManage() {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
   }
 
-  const handleEdit = (product: Product) => {
-    setEditProduct({ ...product })
-    setIsDialogOpen(true)
+  const handleEdit = (product: ProductResponse) => {
+    router.push(`/products/${product.id}/edit`)
   }
 
-  const handleSave = () => {
-    if (!editProduct) return
-    const exists = products.find((p) => p.id === editProduct.id)
-    if (exists) {
-      setProducts(products.map((p) => (p.id === editProduct.id ? { ...editProduct, updatedAt: new Date().toISOString() } : p)))
-    } else {
-      setProducts([...products, editProduct])
+  const handleDelete = async (id: string) => {
+    if (!confirm("정말 삭제하시겠습니까?")) return
+
+    try {
+      await deleteMutation.mutateAsync(id)
+      setSelectedIds(selectedIds.filter((x) => x !== id))
+    } catch (error) {
+      console.error("Failed to delete product:", error)
     }
-    setIsDialogOpen(false)
-    setEditProduct(null)
   }
 
-  const handleDelete = (id: string) => {
-    setProducts(products.filter((p) => p.id !== id))
-    setSelectedIds(selectedIds.filter((x) => x !== id))
-  }
+  const handleBulkDelete = async () => {
+    if (!confirm(`${selectedIds.length}개 상품을 삭제하시겠습니까?`)) return
 
-  const handleBulkDelete = () => {
-    setProducts(products.filter((p) => !selectedIds.includes(p.id)))
-    setSelectedIds([])
+    try {
+      await bulkDeleteMutation.mutateAsync(selectedIds)
+      setSelectedIds([])
+    } catch (error) {
+      console.error("Failed to bulk delete products:", error)
+    }
   }
 
   return (
@@ -203,7 +187,7 @@ export function ProductsManage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">상품 관리</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {"전체 상품을 조회, 등록, 수정, 삭제할 수 있습니다."}
+            전체 {totalElements}개 상품을 조회, 등록, 수정, 삭제할 수 있습니다.
           </p>
         </div>
         <div className="flex gap-2">
@@ -224,6 +208,20 @@ export function ProductsManage() {
         </div>
       </div>
 
+      {/* Error Alert */}
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>오류</AlertTitle>
+          <AlertDescription>
+            {error.message}
+            <Button variant="outline" size="sm" className="ml-2" onClick={() => refetch()}>
+              다시 시도
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Filters */}
       <Card>
         <CardContent className="pt-6">
@@ -238,14 +236,14 @@ export function ProductsManage() {
                   value={search}
                   onChange={(e) => {
                     setSearch(e.target.value)
-                    setPage(1)
+                    setPage(0)
                   }}
                 />
               </div>
             </div>
             <div className="w-full md:w-40">
               <Label className="text-xs text-muted-foreground mb-1.5 block">카테고리</Label>
-              <Select value={categoryFilter} onValueChange={(v) => { setCategoryFilter(v); setPage(1) }}>
+              <Select value={categoryFilter} onValueChange={(v) => { setCategoryFilter(v); setPage(0) }}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -258,7 +256,7 @@ export function ProductsManage() {
             </div>
             <div className="w-full md:w-32">
               <Label className="text-xs text-muted-foreground mb-1.5 block">상태</Label>
-              <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1) }}>
+              <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(0) }}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -279,8 +277,17 @@ export function ProductsManage() {
           <span className="text-sm font-medium text-foreground">
             {selectedIds.length}개 선택됨
           </span>
-          <Button variant="outline" size="sm" onClick={handleBulkDelete}>
-            <Trash2 className="h-3.5 w-3.5 mr-1" />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleBulkDelete}
+            disabled={bulkDeleteMutation.isPending}
+          >
+            {bulkDeleteMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+            ) : (
+              <Trash2 className="h-3.5 w-3.5 mr-1" />
+            )}
             일괄 삭제
           </Button>
           <Button variant="outline" size="sm">
@@ -312,17 +319,26 @@ export function ProductsManage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {paged.length === 0 ? (
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center py-12">
+                    <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                      <Loader2 className="h-8 w-8 animate-spin" />
+                      <span>로딩 중...</span>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : filteredProducts.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8} className="text-center py-12">
                     <div className="flex flex-col items-center gap-2 text-muted-foreground">
                       <ImageIcon className="h-8 w-8" />
-                      <span>{"검색 결과가 없습니다."}</span>
+                      <span>검색 결과가 없습니다.</span>
                     </div>
                   </TableCell>
                 </TableRow>
               ) : (
-                paged.map((product) => (
+                filteredProducts.map((product) => (
                   <TableRow key={product.id}>
                     <TableCell>
                       <Checkbox
@@ -420,20 +436,20 @@ export function ProductsManage() {
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            전체 {filtered.length}개 중 {(page - 1) * ITEMS_PER_PAGE + 1}-
-            {Math.min(page * ITEMS_PER_PAGE, filtered.length)}개 표시
+            전체 {totalElements}개 중 {page * ITEMS_PER_PAGE + 1}-
+            {Math.min((page + 1) * ITEMS_PER_PAGE, totalElements)}개 표시
           </p>
           <div className="flex items-center gap-1">
             <Button
               variant="outline"
               size="icon"
               className="h-8 w-8 bg-transparent"
-              disabled={page <= 1}
+              disabled={page <= 0}
               onClick={() => setPage(page - 1)}
             >
               <ChevronLeft className="h-4 w-4" />
             </Button>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+            {Array.from({ length: totalPages }, (_, i) => i).map((p) => (
               <Button
                 key={p}
                 variant={p === page ? "default" : "outline"}
@@ -441,14 +457,14 @@ export function ProductsManage() {
                 className="h-8 w-8"
                 onClick={() => setPage(p)}
               >
-                {p}
+                {p + 1}
               </Button>
             ))}
             <Button
               variant="outline"
               size="icon"
               className="h-8 w-8 bg-transparent"
-              disabled={page >= totalPages}
+              disabled={page >= totalPages - 1}
               onClick={() => setPage(page + 1)}
             >
               <ChevronRight className="h-4 w-4" />
@@ -456,30 +472,6 @@ export function ProductsManage() {
           </div>
         </div>
       )}
-
-      {/* Edit Dialog */}
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-foreground">상품 수정</DialogTitle>
-            <DialogDescription>상품 기본 정보를 입력하세요.</DialogDescription>
-          </DialogHeader>
-          {editProduct && (
-            <ProductFormFields
-              product={editProduct}
-              categoryTree={categoryTree}
-              onChange={setEditProduct}
-            />
-          )}
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
-              취소
-            </Button>
-            <Button variant="outline">임시저장</Button>
-            <Button onClick={handleSave}>저장</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
     </div>
   )

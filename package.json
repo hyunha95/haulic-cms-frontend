@@ -6,7 +6,9 @@
     "dev": "next dev --turbo",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "seed": "tsx scripts/seed-products.ts",
+    "reset-seed": "tsx scripts/reset-and-seed-products.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.66.9",
@@ -68,6 +70,7 @@
     "@types/react-dom": "19.2.3",
     "postcss": "^8.5",
     "tailwindcss": "^3.4.17",
+    "tsx": "^4.19.2",
     "typescript": "5.7.3"
   },
   "pnpm": {

@@ -150,9 +150,25 @@ export interface CreateProductRequest {
   isActive?: boolean
 }
 
+export interface UpdateProductCommand {
+  name: string
+  category: string
+  price: number
+  stock: number
+  status?: ProductStatus
+  badge?: ProductBadge
+  image?: string
+  additionalImages?: string[]
+  detailDescriptionImage?: string
+  originalPrice?: number
+  isActive?: boolean
+}
+
 export interface ProductResponse extends CreateProductRequest {
   id: string
   status: ProductStatus
+  rating?: number
+  reviewCount?: number
   createdAt?: string
   updatedAt?: string
   createdBy?: string
